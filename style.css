@@ -46,3 +46,19 @@ td.num, th.num { text-align: right; }
 .badge { padding: 3px 10px; border-radius: 99px; color: #fff; font-weight: 700; font-size: .85rem; }
 .badge.on { background: var(--ok); } .badge.off { background: var(--muted); }
 .tags span { display: inline-block; background: #ffe8cc; border-radius: 99px; padding: 3px 10px; margin: 3px; font-size: .9rem; }
+
+.steps { margin: 0 0 10px; padding-left: 1.4em; }
+.qcard { border: 2px solid var(--line); border-radius: 12px; padding: 12px; margin-bottom: 12px; background: #fffdf8; }
+.qhead { display: flex; justify-content: space-between; align-items: center; margin-bottom: 8px; }
+.qtitle { color: var(--accent); font-size: 1.05rem; }
+button.small { padding: 4px 10px; font-size: .8rem; }
+.qin { min-height: 0; margin-bottom: 8px; }
+.crow { display: flex; align-items: center; gap: 8px; margin-bottom: 6px; padding: 4px 6px; border-radius: 10px; border: 2px solid transparent; }
+.crow input[type=radio] { width: 20px; height: 20px; flex: none; accent-color: var(--ok); }
+.ctag { font-weight: 800; color: var(--accent); width: 1.2em; flex: none; }
+.cin { flex: 1; min-width: 0; padding: 8px; font-size: .95rem; }
+.cmark { font-size: .75rem; font-weight: 700; color: var(--muted); flex: none; }
+.crow:has(input[type=radio]:checked) { background: #ebfbee; border-color: var(--ok); }
+.crow:has(input[type=radio]:checked) .cmark { color: var(--ok); }
+.adv { margin-top: 16px; }
+.adv summary { cursor: pointer; color: var(--muted); }

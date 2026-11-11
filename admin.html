@@ -54,13 +54,25 @@
 
     <div class="card">
       <h2>問題の登録</h2>
-      <p class="muted">JSONを貼り付けて登録します（4択×5問）。<code>answer</code> は正解の番号（0始まり）。登録すると問題文と正解は別々に保存されます。</p>
+      <ol class="muted steps">
+        <li>問題文と4つの選択肢を入力する</li>
+        <li>正解の選択肢の「正解」を選ぶ（緑色になります）</li>
+        <li>いちばん下の「保存する」を押す</li>
+      </ol>
       <p id="qStatus" class="muted"></p>
-      <textarea id="json" spellcheck="false" placeholder='[
+      <div id="qList"></div>
+      <button id="addQ" class="sub full">＋ 問題を追加</button>
+      <button id="saveQ" class="full">この内容で保存する</button>
+      <p id="qMsg" class="msg"></p>
+
+      <details class="adv">
+        <summary>JSONでまとめて入力する（上級者向け）</summary>
+        <p class="muted">JSONを貼り付けて「フォームに読み込む」を押すと、上のフォームに反映されます（保存はまだされません）。<code>answer</code> は正解の番号（0始まり）。</p>
+        <textarea id="json" spellcheck="false" placeholder='[
   {"question":"問題文","choices":["A","B","C","D"],"answer":0}
 ]'></textarea>
-      <button id="saveQ" class="full">問題を登録（上書き）</button>
-      <p id="qMsg" class="msg"></p>
+        <button id="loadJson" class="sub full">フォームに読み込む</button>
+      </details>
     </div>
 
     <div class="card">
@@ -132,9 +144,7 @@ function start() {
   unsubs.push(onSnapshot(doc(db, "secret", "answers"), (s) => {
     answers = s.exists() ? s.data().answers : null; render();
   }));
-  unsubs.push(onSnapshot(collection(db, "questions"), (s) => {
-    $("qStatus").textContent = s.size ? `現在 ${s.size} 問が登録済みです。` : "問題は未登録です。";
-  }));
+  loadSavedQuestions();
 }
 
 $("openBtn").onclick = () => setDoc(doc(db, "config", "state"), { open: true });
@@ -191,29 +201,125 @@ function render() {
   });
 }
 
-$("saveQ").onclick = async () => {
-  const msg = $("qMsg"); msg.textContent = "";
+// ---- 問題エディタ ----
+const MAX_Q = 10;
+const LABELS = ["A", "B", "C", "D"];
+const qList = $("qList");
+let radioSeq = 0;
+
+function addQ(q) {
+  if (qList.children.length >= MAX_Q) { $("qMsg").textContent = `問題は最大${MAX_Q}問までです。`; return; }
+  q = q || { question: "", choices: ["", "", "", ""], answer: null };
+  const card = document.createElement("div");
+  card.className = "qcard";
+  const head = document.createElement("div");
+  head.className = "qhead";
+  const title = document.createElement("strong");
+  title.className = "qtitle";
+  const del = document.createElement("button");
+  del.type = "button"; del.className = "sub small"; del.textContent = "この問題を削除";
+  del.onclick = () => {
+    if (!confirm("この問題を削除しますか？")) return;
+    card.remove(); renumber();
+  };
+  head.append(title, del);
+
+  const qin = document.createElement("textarea");
+  qin.className = "qin"; qin.rows = 2; qin.placeholder = "問題文を入力"; qin.value = q.question;
+
+  card.append(head, qin);
+  const name = `ans${radioSeq++}`;
+  LABELS.forEach((lab, k) => {
+    const row = document.createElement("label");
+    row.className = "crow";
+    const radio = document.createElement("input");
+    radio.type = "radio"; radio.name = name; radio.value = k; radio.checked = q.answer === k;
+    const tag = document.createElement("span");
+    tag.className = "ctag"; tag.textContent = lab;
+    const inp = document.createElement("input");
+    inp.type = "text"; inp.className = "cin"; inp.placeholder = `選択肢${lab}`; inp.value = q.choices[k] || "";
+    const mark = document.createElement("span");
+    mark.className = "cmark"; mark.textContent = "正解";
+    row.append(radio, tag, inp, mark);
+    card.append(row);
+  });
+  qList.append(card);
+  renumber();
+}
+
+function renumber() {
+  [...qList.children].forEach((c, i) => { c.querySelector(".qtitle").textContent = `第${i + 1}問`; });
+  $("addQ").disabled = qList.children.length >= MAX_Q;
+}
+
+function fillForm(data) {
+  qList.replaceChildren();
+  data.forEach((q) => addQ(q));
+}
+
+function readForm() {
+  return [...qList.children].map((c) => {
+    const checked = c.querySelector("input[type=radio]:checked");
+    return {
+      question: c.querySelector(".qin").value.trim(),
+      choices: [...c.querySelectorAll(".cin")].map((x) => x.value.trim()),
+      answer: checked ? Number(checked.value) : null,
+    };
+  });
+}
+
+async function loadSavedQuestions() {
+  try {
+    const snap = await getDocs(collection(db, "questions"));
+    const qs = snap.docs.map((d) => d.data()).sort((a, b) => a.order - b.order);
+    if (qs.length) {
+      fillForm(qs.map((q, i) => ({ question: q.question, choices: q.choices, answer: answers ? answers[i] : null })));
+      $("qStatus").textContent = `現在 ${qs.length} 問が登録済みです。修正して保存すると上書きされます。`;
+    } else {
+      for (let i = 0; i < 5; i++) addQ();
+      $("qStatus").textContent = "問題は未登録です。5問分の入力欄を用意しました。";
+    }
+  } catch (e) { console.error(e); $("qStatus").textContent = "登録済みの問題を読み込めませんでした。"; }
+}
+
+$("addQ").onclick = () => addQ();
+
+$("loadJson").onclick = () => {
+  const msg = $("qMsg"); msg.style.color = ""; msg.textContent = "";
   let data;
   try { data = JSON.parse($("json").value); } catch { msg.textContent = "JSONの形式が正しくありません。"; return; }
-  if (!Array.isArray(data) || data.length === 0) { msg.textContent = "配列で1問以上指定してください。"; return; }
+  if (!Array.isArray(data) || data.length === 0 || data.length > MAX_Q) { msg.textContent = `配列で1〜${MAX_Q}問を指定してください。`; return; }
+  const ok = data.every((q) => q && typeof q.question === "string" && Array.isArray(q.choices) && q.choices.length === 4 &&
+    q.choices.every((c) => typeof c === "string") && Number.isInteger(q.answer) && q.answer >= 0 && q.answer <= 3);
+  if (!ok) { msg.textContent = "形式が正しくありません（選択肢は4つ、answerは0〜3）。"; return; }
+  fillForm(data);
+  msg.style.color = "var(--ok)"; msg.textContent = "フォームに読み込みました。内容を確認して「この内容で保存する」を押してください。";
+};
+
+$("saveQ").onclick = async () => {
+  const msg = $("qMsg"); msg.style.color = ""; msg.textContent = "";
+  const data = readForm();
+  if (!data.length) { msg.textContent = "問題が1問もありません。"; return; }
   for (const [i, q] of data.entries()) {
-    const ok = q && typeof q.question === "string" && q.question.trim() &&
-      Array.isArray(q.choices) && q.choices.length === 4 && q.choices.every((c) => typeof c === "string" && c.trim()) &&
-      Number.isInteger(q.answer) && q.answer >= 0 && q.answer <= 3;
-    if (!ok) { msg.textContent = `${i + 1}問目の形式が正しくありません（選択肢は4つ、answerは0〜3）。`; return; }
+    if (!q.question) { msg.textContent = `第${i + 1}問: 問題文を入力してください。`; return; }
+    const empty = q.choices.findIndex((c) => !c);
+    if (empty >= 0) { msg.textContent = `第${i + 1}問: 選択肢${LABELS[empty]}が空です。`; return; }
+    if (q.answer === null) { msg.textContent = `第${i + 1}問: 正解を選んでください。`; return; }
   }
-  if (data.length !== 5 && !confirm(`${data.length}問です（想定は5問）。このまま登録しますか？`)) return;
+  if (data.length !== 5 && !confirm(`${data.length}問です（想定は5問）。このまま保存しますか？`)) return;
+  $("saveQ").disabled = true;
   try {
     const old = await getDocs(collection(db, "questions"));
     const b = writeBatch(db);
     old.forEach((d) => b.delete(d.ref));
     data.forEach((q, i) => b.set(doc(db, "questions", `q${String(i).padStart(2, "0")}`),
-      { order: i, question: q.question.trim(), choices: q.choices.map((c) => c.trim()) }));
+      { order: i, question: q.question, choices: q.choices }));
     b.set(doc(db, "secret", "answers"), { answers: data.map((q) => q.answer) });
     await b.commit();
-    $("json").value = "";
-    msg.style.color = "var(--ok)"; msg.textContent = `${data.length}問を登録しました。`;
-  } catch (e) { console.error(e); msg.style.color = ""; msg.textContent = "登録に失敗しました。"; }
+    $("qStatus").textContent = `現在 ${data.length} 問が登録済みです。修正して保存すると上書きされます。`;
+    msg.style.color = "var(--ok)"; msg.textContent = `✅ ${data.length}問を保存しました。`;
+  } catch (e) { console.error(e); msg.textContent = "保存に失敗しました。通信状況を確認してもう一度お試しください。"; }
+  $("saveQ").disabled = false;
 };
 
 $("wipeBtn").onclick = async () => {
