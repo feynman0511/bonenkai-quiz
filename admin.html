@@ -217,7 +217,7 @@ function addQ(q) {
   const title = document.createElement("strong");
   title.className = "qtitle";
   const del = document.createElement("button");
-  del.type = "button"; del.className = "sub small"; del.textContent = "この問題を削除";
+  del.type = "button"; del.className = "sub small"; del.textContent = "削除";
   del.onclick = () => {
     if (!confirm("この問題を削除しますか？")) return;
     card.remove(); renumber();
