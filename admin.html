@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="ja">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="robots" content="noindex">
+<title>忘年会クイズ 管理画面</title>
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<main>
+  <h1>🛠 管理画面</h1>
+
+  <section id="login" class="card center">
+    <p>幹事のGoogleアカウントでログインしてください。</p>
+    <button id="loginBtn">Googleでログイン</button>
+    <p id="loginMsg" class="msg"></p>
+  </section>
+
+  <div id="panel" class="hidden">
+    <div class="card">
+      <div class="row" style="justify-content:space-between">
+        <span>受付状態: <span id="stateBadge" class="badge off">締切</span></span>
+        <button id="logoutBtn" class="sub">ログアウト</button>
+      </div>
+      <div class="row" style="margin-top:12px">
+        <button id="openBtn">受付開始</button>
+        <button id="closeBtn" class="danger">締切</button>
+      </div>
+      <p class="muted">忘年会当日、全員が揃ってから「受付開始」を押してください。</p>
+    </div>
+
+    <div class="card">
+      <h2>回答状況</h2>
+      <p><span class="big" id="answered">0</span> / <span id="joined">0</span> 人 回答済み</p>
+      <p class="muted">未回答の参加者:</p>
+      <div id="unanswered" class="tags"></div>
+    </div>
+
+    <div class="card">
+      <h2>順位表</h2>
+      <p id="rankInfo" class="muted"></p>
+      <div class="row">
+        <button id="revealBtn" class="sub">順位を表示する</button>
+        <label class="muted"><input type="checkbox" id="speedChk"> スピードも順位に含める</label>
+      </div>
+      <div id="rankBox" class="hidden" style="margin-top:12px">
+        <table>
+          <thead><tr><th class="num">順位</th><th>名前</th><th class="num">正解</th><th class="num">合計秒</th></tr></thead>
+          <tbody id="rankBody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>問題の登録</h2>
+      <p class="muted">JSONを貼り付けて登録します（4択×5問）。<code>answer</code> は正解の番号（0始まり）。登録すると問題文と正解は別々に保存されます。</p>
+      <p id="qStatus" class="muted"></p>
+      <textarea id="json" spellcheck="false" placeholder='[
+  {"question":"問題文","choices":["A","B","C","D"],"answer":0}
+]'></textarea>
+      <button id="saveQ" class="full">問題を登録（上書き）</button>
+      <p id="qMsg" class="msg"></p>
+    </div>
+
+    <div class="card">
+      <h2>データ削除</h2>
+      <p class="muted">テスト回答の削除や、忘年会後の片付けに使います。問題と正解は残ります。</p>
+      <button id="wipeBtn" class="danger">参加者・回答を全削除</button>
+      <p id="wipeMsg" class="msg"></p>
+    </div>
+  </div>
+</main>
+
+<script type="module">
+import { firebaseConfig, FIREBASE_SDK } from "./firebase-config.js";
+const { initializeApp } = await import(`${FIREBASE_SDK}/firebase-app.js`);
+const { getAuth, GoogleAuthProvider, signInWithPopup, signOut, onAuthStateChanged } =
+  await import(`${FIREBASE_SDK}/firebase-auth.js`);
+const { getFirestore, doc, getDoc, setDoc, getDocs, collection, onSnapshot, writeBatch } =
+  await import(`${FIREBASE_SDK}/firebase-firestore.js`);
+
+const $ = (id) => document.getElementById(id);
+const app = initializeApp(firebaseConfig);
+const auth = getAuth(app);
+const db = getFirestore(app);
+
+let answers = null, participants = [], responses = [], revealed = false;
+let unsubs = [];
+
+$("loginBtn").onclick = async () => {
+  $("loginMsg").textContent = "";
+  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
+  catch (e) { console.error(e); $("loginMsg").textContent = "ログインに失敗しました。"; }
+};
+$("logoutBtn").onclick = () => signOut(auth);
+
+onAuthStateChanged(auth, async (user) => {
+  unsubs.forEach((u) => u()); unsubs = [];
+  if (!user || user.isAnonymous) {
+    $("login").classList.remove("hidden"); $("panel").classList.add("hidden");
+    if (user) await signOut(auth); // 参加者の匿名セッションが残っていた場合
+    return;
+  }
+  // 幹事かどうかを、幹事しか読めないドキュメントの読み取りで確認
+  try {
+    const a = await getDoc(doc(db, "secret", "answers"));
+    answers = a.exists() ? a.data().answers : null;
+  } catch (e) {
+    console.error(e);
+    $("loginMsg").textContent = "このアカウントは管理者として許可されていません。";
+    await signOut(auth);
+    return;
+  }
+  $("login").classList.add("hidden"); $("panel").classList.remove("hidden");
+  start();
+});
+
+function start() {
+  unsubs.push(onSnapshot(doc(db, "config", "state"), (s) => {
+    const open = !!(s.exists() && s.data().open);
+    $("stateBadge").textContent = open ? "受付中" : "締切";
+    $("stateBadge").className = "badge " + (open ? "on" : "off");
+    $("openBtn").disabled = open; $("closeBtn").disabled = !open;
+  }));
+  unsubs.push(onSnapshot(collection(db, "participants"), (s) => {
+    participants = s.docs.map((d) => ({ uid: d.id, ...d.data() })); render();
+  }));
+  unsubs.push(onSnapshot(collection(db, "responses"), (s) => {
+    responses = s.docs.map((d) => ({ uid: d.id, ...d.data() })); render();
+  }));
+  unsubs.push(onSnapshot(doc(db, "secret", "answers"), (s) => {
+    answers = s.exists() ? s.data().answers : null; render();
+  }));
+  unsubs.push(onSnapshot(collection(db, "questions"), (s) => {
+    $("qStatus").textContent = s.size ? `現在 ${s.size} 問が登録済みです。` : "問題は未登録です。";
+  }));
+}
+
+$("openBtn").onclick = () => setDoc(doc(db, "config", "state"), { open: true });
+$("closeBtn").onclick = () => setDoc(doc(db, "config", "state"), { open: false });
+
+$("revealBtn").onclick = () => {
+  revealed = !revealed;
+  $("revealBtn").textContent = revealed ? "順位を隠す" : "順位を表示する";
+  render();
+};
+$("speedChk").onchange = render;
+
+function render() {
+  const respUids = new Set(responses.map((r) => r.uid));
+  const unanswered = participants.filter((p) => !respUids.has(p.uid));
+  const names = new Map(participants.map((p) => [p.uid, p.name]));
+  // 参加登録なしで回答のみ存在する場合も人数に含める
+  const joined = new Set([...participants.map((p) => p.uid), ...respUids]).size;
+  $("answered").textContent = respUids.size;
+  $("joined").textContent = joined;
+  const box = $("unanswered");
+  box.replaceChildren();
+  if (!unanswered.length) box.textContent = participants.length ? "（全員回答済み）" : "（参加者なし）";
+  for (const p of unanswered) { const s = document.createElement("span"); s.textContent = p.name; box.append(s); }
+
+  $("rankBox").classList.toggle("hidden", !revealed);
+  if (!answers) { $("rankInfo").textContent = "正解が未登録のため順位を計算できません。"; return; }
+  $("rankInfo").textContent = "正解数の多い順。同点は同順位です。";
+  if (!revealed) return;
+
+  const useSpeed = $("speedChk").checked;
+  const rows = responses.map((r) => ({
+    name: r.name || names.get(r.uid) || "(不明)",
+    score: (r.choices || []).reduce((n, c, i) => n + (c === answers[i] ? 1 : 0), 0),
+    time: (r.times || []).reduce((a, b) => a + b, 0) / 1000,
+  }));
+  rows.sort((a, b) => b.score - a.score || (useSpeed ? a.time - b.time : 0) || a.name.localeCompare(b.name, "ja"));
+  let rank = 0;
+  const body = $("rankBody");
+  body.replaceChildren();
+  rows.forEach((r, i) => {
+    const prev = rows[i - 1];
+    const tie = prev && prev.score === r.score && (!useSpeed || prev.time === r.time);
+    if (!tie) rank = i + 1;
+    const tr = document.createElement("tr");
+    if (rank === 1) tr.className = "rank1";
+    [rank, r.name, r.score, r.time.toFixed(1)].forEach((v, k) => {
+      const td = document.createElement("td");
+      if (k !== 1) td.className = "num";
+      td.textContent = k === 0 ? `${v}位` : v;
+      tr.append(td);
+    });
+    body.append(tr);
+  });
+}
+
+$("saveQ").onclick = async () => {
+  const msg = $("qMsg"); msg.textContent = "";
+  let data;
+  try { data = JSON.parse($("json").value); } catch { msg.textContent = "JSONの形式が正しくありません。"; return; }
+  if (!Array.isArray(data) || data.length === 0) { msg.textContent = "配列で1問以上指定してください。"; return; }
+  for (const [i, q] of data.entries()) {
+    const ok = q && typeof q.question === "string" && q.question.trim() &&
+      Array.isArray(q.choices) && q.choices.length === 4 && q.choices.every((c) => typeof c === "string" && c.trim()) &&
+      Number.isInteger(q.answer) && q.answer >= 0 && q.answer <= 3;
+    if (!ok) { msg.textContent = `${i + 1}問目の形式が正しくありません（選択肢は4つ、answerは0〜3）。`; return; }
+  }
+  if (data.length !== 5 && !confirm(`${data.length}問です（想定は5問）。このまま登録しますか？`)) return;
+  try {
+    const old = await getDocs(collection(db, "questions"));
+    const b = writeBatch(db);
+    old.forEach((d) => b.delete(d.ref));
+    data.forEach((q, i) => b.set(doc(db, "questions", `q${String(i).padStart(2, "0")}`),
+      { order: i, question: q.question.trim(), choices: q.choices.map((c) => c.trim()) }));
+    b.set(doc(db, "secret", "answers"), { answers: data.map((q) => q.answer) });
+    await b.commit();
+    $("json").value = "";
+    msg.style.color = "var(--ok)"; msg.textContent = `${data.length}問を登録しました。`;
+  } catch (e) { console.error(e); msg.style.color = ""; msg.textContent = "登録に失敗しました。"; }
+};
+
+$("wipeBtn").onclick = async () => {
+  if (!confirm("参加者と回答をすべて削除します。よろしいですか？")) return;
+  try {
+    for (const name of ["responses", "participants"]) {
+      const snap = await getDocs(collection(db, name));
+      for (let i = 0; i < snap.docs.length; i += 400) {
+        const b = writeBatch(db);
+        snap.docs.slice(i, i + 400).forEach((d) => b.delete(d.ref));
+        await b.commit();
+      }
+    }
+    $("wipeMsg").textContent = "削除しました。参加者側の端末に残った入力途中データは各自のブラウザで消えます。";
+  } catch (e) { console.error(e); $("wipeMsg").textContent = "削除に失敗しました。"; }
+};
+</script>
+</body>
+</html>
