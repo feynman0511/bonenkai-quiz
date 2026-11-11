@@ -88,7 +88,7 @@ if (!finished) {
     if (p.exists()) name = p.data().name;
   } catch (e) { console.error(e); }
 
-  if (!name) show("join");
+  if (!name) { saveLocal({ choices: [], times: [] }); show("join"); } // 登録が無い=新規(または全削除後)。端末に残った途中データを捨てる
   else enterWaiting();
 
   onSnapshot(doc(db, "config", "state"), (snap) => {
@@ -179,6 +179,7 @@ async function submit(choices, times) {
   try {
     await setDoc(doc(db, "responses", uid), { name, choices, times, submittedAt: serverTimestamp() });
     finished = true;
+    saveLocal({ choices: [], times: [] });
     show("done");
   } catch (e) {
     console.error(e);
