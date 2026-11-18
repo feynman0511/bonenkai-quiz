@@ -50,8 +50,10 @@ service cloud.firestore {
         && request.resource.data.keys().hasOnly(['name', 'choices', 'times', 'submittedAt'])
         && request.resource.data.name is string
         && request.resource.data.name.size() > 0 && request.resource.data.name.size() <= 20
-        && request.resource.data.choices is list && request.resource.data.choices.size() == 5
-        && request.resource.data.times is list && request.resource.data.times.size() == 5
+        && request.resource.data.choices is list
+        && request.resource.data.choices.size() >= 1 && request.resource.data.choices.size() <= 10
+        && request.resource.data.times is list
+        && request.resource.data.times.size() == request.resource.data.choices.size()
         && request.resource.data.submittedAt == request.time;
       allow get: if request.auth != null && request.auth.uid == uid;
       allow list, delete: if isAdmin();

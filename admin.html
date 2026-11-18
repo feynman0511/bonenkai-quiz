@@ -6,6 +6,15 @@
 <meta name="robots" content="noindex">
 <title>2PD忘年会クイズ 管理画面</title>
 <link rel="stylesheet" href="style.css">
+<script>
+// LINEのアプリ内ブラウザではGoogleログインが失敗するため、外部ブラウザで開き直す
+(function () {
+  var ua = navigator.userAgent || "";
+  if (/ Line\//i.test(ua) && location.search.indexOf("openExternalBrowser=1") < 0) {
+    location.replace(location.pathname + (location.search ? location.search + "&" : "?") + "openExternalBrowser=1" + location.hash);
+  }
+})();
+</script>
 </head>
 <body>
 <main>
@@ -15,6 +24,7 @@
     <p>幹事のGoogleアカウントでログインしてください。</p>
     <button id="loginBtn">Googleでログイン</button>
     <p id="loginMsg" class="msg"></p>
+    <p class="muted" style="margin-top:14px">LINEなどアプリ内のブラウザではログインできません。SafariまたはChromeで開いてください。</p>
   </section>
 
   <div id="panel" class="hidden">
@@ -27,6 +37,7 @@
         <button id="openBtn">受付開始</button>
         <button id="closeBtn" class="danger">締切</button>
       </div>
+      <p id="stateMsg" class="msg"></p>
       <p class="muted">忘年会当日、全員が揃ってから「受付開始」を押してください。</p>
     </div>
 
@@ -93,7 +104,7 @@ const { getFirestore, doc, getDoc, setDoc, getDocs, collection, onSnapshot, writ
   await import(`${FIREBASE_SDK}/firebase-firestore.js`);
 
 const $ = (id) => document.getElementById(id);
-const app = initializeApp(firebaseConfig);
+const app = initializeApp(firebaseConfig, "admin");
 const auth = getAuth(app);
 const db = getFirestore(app);
 
@@ -102,8 +113,20 @@ let unsubs = [];
 
 $("loginBtn").onclick = async () => {
   $("loginMsg").textContent = "";
-  try { await signInWithPopup(auth, new GoogleAuthProvider()); }
-  catch (e) { console.error(e); $("loginMsg").textContent = "ログインに失敗しました。"; }
+  const provider = new GoogleAuthProvider();
+  provider.setCustomParameters({ prompt: "select_account" });
+  try { await signInWithPopup(auth, provider); }
+  catch (e) {
+    console.error(e);
+    const m = {
+      "auth/popup-blocked": "ポップアップがブロックされました。ブラウザの設定でポップアップを許可するか、SafariまたはChromeで開いてください。",
+      "auth/popup-closed-by-user": "ログイン画面が閉じられました。もう一度お試しください。",
+      "auth/cancelled-popup-request": "ログイン画面が閉じられました。もう一度お試しください。",
+      "auth/unauthorized-domain": "このURLはログインが許可されていません（承認済みドメインの設定を確認してください）。",
+      "auth/network-request-failed": "通信に失敗しました。電波を確認してもう一度お試しください。",
+    }[e.code];
+    $("loginMsg").textContent = m || `ログインに失敗しました（${e.code || e.message}）。SafariまたはChromeで開き直してお試しください。`;
+  }
 };
 $("logoutBtn").onclick = () => signOut(auth);
 
@@ -111,7 +134,6 @@ onAuthStateChanged(auth, async (user) => {
   unsubs.forEach((u) => u()); unsubs = [];
   if (!user || user.isAnonymous) {
     $("login").classList.remove("hidden"); $("panel").classList.add("hidden");
-    if (user) await signOut(auth); // 参加者の匿名セッションが残っていた場合
     return;
   }
   // 幹事かどうかを、幹事しか読めないドキュメントの読み取りで確認
@@ -120,7 +142,9 @@ onAuthStateChanged(auth, async (user) => {
     answers = a.exists() ? a.data().answers : null;
   } catch (e) {
     console.error(e);
-    $("loginMsg").textContent = "このアカウントは管理者として許可されていません。";
+    $("loginMsg").textContent = e.code === "permission-denied"
+      ? `${user.email} は管理者として登録されていません。別のアカウントでログインしてください。`
+      : "通信に失敗しました。電波を確認して再読み込みしてください。";
     await signOut(auth);
     return;
   }
@@ -147,8 +171,22 @@ function start() {
   loadSavedQuestions();
 }
 
-$("openBtn").onclick = () => setDoc(doc(db, "config", "state"), { open: true });
-$("closeBtn").onclick = () => setDoc(doc(db, "config", "state"), { open: false });
+async function setOpen(open) {
+  $("stateMsg").textContent = "";
+  $("openBtn").disabled = $("closeBtn").disabled = true;
+  try { await setDoc(doc(db, "config", "state"), { open }); }
+  catch (e) {
+    console.error(e);
+    $("stateMsg").textContent = "切り替えに失敗しました。電波を確認してもう一度押してください。";
+    $("openBtn").disabled = false; $("closeBtn").disabled = false;
+  }
+}
+$("openBtn").onclick = () => setOpen(true);
+$("closeBtn").onclick = () => {
+  const left = Number($("joined").textContent) - Number($("answered").textContent);
+  if (left > 0 && !confirm(`まだ ${left} 人が未回答です。締め切りますか？（回答途中の人は送信できなくなります）`)) return;
+  setOpen(false);
+};
 
 $("revealBtn").onclick = () => {
   revealed = !revealed;
@@ -161,6 +199,9 @@ function render() {
   const respUids = new Set(responses.map((r) => r.uid));
   const unanswered = participants.filter((p) => !respUids.has(p.uid));
   const names = new Map(participants.map((p) => [p.uid, p.name]));
+  const nameCount = new Map();
+  for (const n of [...names.values(), ...responses.filter((r) => !names.has(r.uid)).map((r) => r.name)]) nameCount.set(n, (nameCount.get(n) || 0) + 1);
+  const label = (n) => (nameCount.get(n) > 1 ? `${n}（同名あり）` : n);
   // 参加登録なしで回答のみ存在する場合も人数に含める
   const joined = new Set([...participants.map((p) => p.uid), ...respUids]).size;
   $("answered").textContent = respUids.size;
@@ -168,7 +209,7 @@ function render() {
   const box = $("unanswered");
   box.replaceChildren();
   if (!unanswered.length) box.textContent = participants.length ? "（全員回答済み）" : "（参加者なし）";
-  for (const p of unanswered) { const s = document.createElement("span"); s.textContent = p.name; box.append(s); }
+  for (const p of unanswered) { const s = document.createElement("span"); s.textContent = label(p.name); box.append(s); }
 
   $("rankBox").classList.toggle("hidden", !revealed);
   if (!answers) { $("rankInfo").textContent = "正解が未登録のため順位を計算できません。"; return; }
@@ -177,7 +218,7 @@ function render() {
 
   const useSpeed = $("speedChk").checked;
   const rows = responses.map((r) => ({
-    name: r.name || names.get(r.uid) || "(不明)",
+    name: label(r.name || names.get(r.uid) || "(不明)"),
     score: (r.choices || []).reduce((n, c, i) => n + (c === answers[i] ? 1 : 0), 0),
     time: (r.times || []).reduce((a, b) => a + b, 0) / 1000,
   }));
@@ -307,6 +348,9 @@ $("saveQ").onclick = async () => {
     if (q.answer === null) { msg.textContent = `第${i + 1}問: 正解を選んでください。`; return; }
   }
   if (data.length !== 5 && !confirm(`${data.length}問です（想定は5問）。このまま保存しますか？`)) return;
+  if ($("stateBadge").textContent === "受付中" &&
+      !confirm("現在「受付中」です。回答中の人がいる状態で問題を変更すると、採点が正しくできなくなります。本当に保存しますか？")) return;
+  if (responses.length && !confirm(`すでに ${responses.length} 人の回答があります。問題・正解を変更すると採点結果が変わります。保存しますか？`)) return;
   $("saveQ").disabled = true;
   try {
     const old = await getDocs(collection(db, "questions"));

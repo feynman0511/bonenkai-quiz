@@ -5,12 +5,27 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>2PD忘年会クイズ</title>
 <link rel="stylesheet" href="style.css">
+<script>
+// LINEのアプリ内ブラウザだと通常のブラウザと端末IDが別になる等のため、外部ブラウザで開き直す
+(function () {
+  var ua = navigator.userAgent || "";
+  if (/ Line\//i.test(ua) && location.search.indexOf("openExternalBrowser=1") < 0) {
+    location.replace(location.pathname + (location.search ? location.search + "&" : "?") + "openExternalBrowser=1" + location.hash);
+  }
+})();
+</script>
 </head>
 <body>
 <main>
   <h1>🎉 2PD忘年会クイズ 🎉</h1>
 
-  <section id="loading" class="card center"><p class="muted">読み込み中...</p></section>
+  <section id="loading" class="card center">
+    <p class="muted">読み込み中...</p>
+    <div id="slow" class="hidden">
+      <p class="muted">読み込みに時間がかかっています。電波の良い場所で再読み込みしてください。</p>
+      <button onclick="location.reload()">再読み込み</button>
+    </div>
+  </section>
 
   <section id="join" class="card hidden">
     <h2>参加する</h2>
@@ -23,7 +38,9 @@
   <section id="waiting" class="card center hidden">
     <p class="big">⏳</p>
     <h2><span id="who"></span> さん、参加OK！</h2>
-    <p>クイズの開始までお待ちください。<br>幹事の合図で自動的に始まります。</p>
+    <p class="phrases"><span>クイズの開始まで</span><span>お待ちください。</span><br><span>幹事の合図で</span><span>自動的に始まります。</span></p>
+    <p class="muted" style="margin-top:18px">開始の合図があっても画面が変わらない場合は</p>
+    <button class="sub" onclick="location.reload()">再読み込み</button>
   </section>
 
   <section id="quiz" class="card hidden">
@@ -41,18 +58,29 @@
   <section id="done" class="card center hidden">
     <div class="check" aria-hidden="true"></div>
     <h2>回答完了！</h2>
+    <p class="muted"><span id="doneName"></span></p>
     <p class="phrases"><span>お疲れさまでした。</span><br><span>結果は忘年会の後半に</span><span>発表します。</span><br><span>お楽しみに！</span></p>
   </section>
 
-  <section id="error" class="card hidden"><p class="msg" id="errorMsg"></p></section>
+  <section id="error" class="card center hidden">
+    <p class="msg" id="errorMsg"></p>
+    <button onclick="location.reload()">再読み込み</button>
+  </section>
 </main>
 
+<script nomodule>
+  // 非常に古いブラウザ向け
+  document.getElementById("loading").innerHTML = '<p class="msg">このブラウザには対応していません。SafariまたはChromeの最新版で開いてください。</p>';
+</script>
+<script>
+  // 15秒たっても読み込み中なら再読み込みを案内
+  setTimeout(function () {
+    var l = document.getElementById("loading");
+    if (l && !l.classList.contains("hidden")) document.getElementById("slow").classList.remove("hidden");
+  }, 15000);
+</script>
 <script type="module">
 import { firebaseConfig, FIREBASE_SDK } from "./firebase-config.js";
-const { initializeApp } = await import(`${FIREBASE_SDK}/firebase-app.js`);
-const { getAuth, signInAnonymously } = await import(`${FIREBASE_SDK}/firebase-auth.js`);
-const { getFirestore, doc, getDoc, setDoc, getDocs, collection, onSnapshot, serverTimestamp } =
-  await import(`${FIREBASE_SDK}/firebase-firestore.js`);
 
 const $ = (id) => document.getElementById(id);
 const show = (id) => {
@@ -60,140 +88,165 @@ const show = (id) => {
 };
 const fail = (msg) => { $("errorMsg").textContent = msg; show("error"); };
 
-const app = initializeApp(firebaseConfig);
-const auth = getAuth(app);
-const db = getFirestore(app);
-
-let uid, name = "", isOpen = false, questions = null, started = false, finished = false;
 const LS = "bonenkai-quiz-v1";
 const loadLocal = () => { try { return JSON.parse(localStorage.getItem(LS)) || {}; } catch { return {}; } };
 const saveLocal = (o) => { try { localStorage.setItem(LS, JSON.stringify({ ...loadLocal(), ...o })); } catch {} };
 
-try {
-  const cred = await signInAnonymously(auth);
-  uid = cred.user.uid;
-} catch (e) {
-  fail("ログインに失敗しました。通信状況を確認して再読み込みしてください。");
-  throw e;
-}
+// トップレベルawaitを使わない（古めのiPhoneでも動くように）
+main().catch((e) => {
+  console.error(e);
+  fail("読み込みに失敗しました。電波の良い場所で再読み込みしてください。");
+});
 
-// すでに回答済みなら完了画面へ
-try {
-  if ((await getDoc(doc(db, "responses", uid))).exists()) { finished = true; show("done"); }
-} catch (e) { console.error(e); }
+async function main() {
+  const [{ initializeApp }, { getAuth, signInAnonymously }, fs] = await Promise.all([
+    import(`${FIREBASE_SDK}/firebase-app.js`),
+    import(`${FIREBASE_SDK}/firebase-auth.js`),
+    import(`${FIREBASE_SDK}/firebase-firestore.js`),
+  ]);
+  const { getFirestore, doc, getDoc, setDoc, getDocs, collection, onSnapshot, serverTimestamp } = fs;
 
-if (!finished) {
+  const app = initializeApp(firebaseConfig);
+  const auth = getAuth(app);
+  const db = getFirestore(app);
+
+  let uid, name = "", isOpen = false, questions = null, started = false, finished = false;
+
+  try {
+    uid = (await signInAnonymously(auth)).user.uid;
+  } catch (e) {
+    console.error(e);
+    fail("ログインに失敗しました。電波の良い場所で再読み込みしてください。");
+    return;
+  }
+
+  const showDone = () => {
+    finished = true;
+    $("doneName").textContent = name ? `${name} さんの回答を受け付けました` : "";
+    show("done");
+  };
+
+  // 回答済みか・参加登録済みかを確認
   try {
     const p = await getDoc(doc(db, "participants", uid));
     if (p.exists()) name = p.data().name;
   } catch (e) { console.error(e); }
+  try {
+    if ((await getDoc(doc(db, "responses", uid))).exists()) { showDone(); return; }
+  } catch (e) { console.error(e); }
 
-  if (!name) { saveLocal({ choices: [], times: [] }); show("join"); } // 登録が無い=新規(または全削除後)。端末に残った途中データを捨てる
+  if (!name) { saveLocal({ choices: [], times: [] }); show("join"); } // 登録なし=新規(または全削除後)。端末に残った途中データを捨てる
   else enterWaiting();
 
-  onSnapshot(doc(db, "config", "state"), (snap) => {
-    isOpen = !!(snap.exists() && snap.data().open);
-    update();
-  }, (e) => { console.error(e); });
-}
+  const stateRef = doc(db, "config", "state");
+  const applyState = (snap) => { isOpen = !!(snap.exists() && snap.data().open); update(); };
+  onSnapshot(stateRef, applyState, (e) => console.error(e));
+  // スリープ復帰時など、リアルタイム通知が止まっていても確実に状態を取り直す
+  const refresh = () => { if (!finished && !started) getDoc(stateRef).then(applyState).catch((e) => console.error(e)); };
+  document.addEventListener("visibilitychange", () => { if (document.visibilityState === "visible") refresh(); });
+  setInterval(refresh, 20000);
 
-$("joinBtn").onclick = async () => {
-  const n = $("name").value.trim();
-  if (!n) { $("joinMsg").textContent = "名前を入力してください。"; return; }
-  $("joinBtn").disabled = true;
-  try {
-    await setDoc(doc(db, "participants", uid), { name: n, joinedAt: serverTimestamp() });
-    name = n;
-    enterWaiting();
-  } catch (e) {
-    console.error(e);
-    $("joinMsg").textContent = "参加登録に失敗しました。もう一度お試しください。";
-    $("joinBtn").disabled = false;
-  }
-};
-
-function enterWaiting() {
-  $("who").textContent = name;
-  show("waiting");
-  update();
-}
-
-async function update() {
-  if (finished || started || !name) return;
-  if (!isOpen) { show("waiting"); return; }
-  started = true;
-  try {
-    const snap = await getDocs(collection(db, "questions"));
-    questions = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.order - b.order);
-    if (!questions.length) throw new Error("no questions");
-  } catch (e) {
-    console.error(e); started = false;
-    fail("問題を取得できませんでした。幹事に声をかけてください。");
-    return;
-  }
-  runQuiz();
-}
-
-function runQuiz() {
-  const saved = loadLocal();
-  const choices = Array.isArray(saved.choices) ? saved.choices.slice(0, questions.length) : [];
-  const times = Array.isArray(saved.times) ? saved.times.slice(0, questions.length) : [];
-  let i = choices.length;
-  let shownAt = Date.now();
-  let locked = false;
-
-  const render = () => {
-    if (i >= questions.length) return submit(choices, times);
-    const q = questions[i];
-    $("bar").style.width = `${(i / questions.length) * 100}%`;
-    $("qnum").textContent = `第${i + 1}問 / ${questions.length}問`;
-    $("qtext").textContent = q.question;
-    const box = $("choices");
-    box.replaceChildren();
-    q.choices.forEach((c, idx) => {
-      const b = document.createElement("button");
-      b.className = "choice";
-      const l = document.createElement("b");
-      l.textContent = "ABCD"[idx];
-      b.append(l, document.createTextNode(c));
-      b.onclick = () => {
-        if (locked) return;
-        locked = true;
-        choices.push(idx);
-        times.push(Date.now() - shownAt);
-        saveLocal({ choices, times });
-        i++; shownAt = Date.now(); locked = false;
-        render();
-      };
-      box.append(b);
-    });
-    show("quiz");
-  };
-  render();
-}
-
-async function submit(choices, times) {
-  show("submitting");
-  $("submitMsg").textContent = "送信中...";
-  $("retryBtn").classList.add("hidden");
-  try {
-    await setDoc(doc(db, "responses", uid), { name, choices, times, submittedAt: serverTimestamp() });
-    finished = true;
-    saveLocal({ choices: [], times: [] });
-    show("done");
-  } catch (e) {
-    console.error(e);
-    if (e.code === "permission-denied") {
-      // すでに保存済み(上書き禁止) or 締切後
+  $("joinBtn").onclick = async () => {
+    const n = $("name").value.trim();
+    if (!n) { $("joinMsg").textContent = "名前を入力してください。"; return; }
+    $("joinBtn").disabled = true;
+    $("joinMsg").textContent = "";
+    try {
+      await setDoc(doc(db, "participants", uid), { name: n, joinedAt: serverTimestamp() });
+      name = n;
+      enterWaiting();
+    } catch (e) {
+      console.error(e);
+      // 通信の不調で登録済みを見落としていた場合は、そのまま進める
       try {
-        if ((await getDoc(doc(db, "responses", uid))).exists()) { finished = true; show("done"); return; }
+        const p = await getDoc(doc(db, "participants", uid));
+        if (p.exists()) { name = p.data().name; enterWaiting(); return; }
       } catch {}
-      $("submitMsg").textContent = "送信できませんでした（受付が締め切られた可能性があります）。幹事に声をかけてください。";
-    } else {
-      $("submitMsg").textContent = "送信に失敗しました。通信状況を確認してもう一度押してください。";
+      $("joinMsg").textContent = "参加登録に失敗しました。電波を確認して、もう一度押してください。";
+      $("joinBtn").disabled = false;
     }
-    $("retryBtn").classList.remove("hidden");
-    $("retryBtn").onclick = () => submit(choices, times);
+  };
+
+  function enterWaiting() {
+    $("who").textContent = name;
+    show("waiting");
+    update();
+  }
+
+  async function update() {
+    if (finished || started || !name || !isOpen) return;
+    started = true;
+    try {
+      const snap = await getDocs(collection(db, "questions"));
+      questions = snap.docs.map((d) => ({ id: d.id, ...d.data() })).sort((a, b) => a.order - b.order);
+      if (!questions.length) throw new Error("no questions");
+    } catch (e) {
+      console.error(e); started = false;
+      fail("問題を取得できませんでした。再読み込みしても直らない場合は幹事に声をかけてください。");
+      return;
+    }
+    runQuiz();
+  }
+
+  function runQuiz() {
+    const saved = loadLocal();
+    const choices = Array.isArray(saved.choices) ? saved.choices.slice(0, questions.length) : [];
+    const times = Array.isArray(saved.times) ? saved.times.slice(0, questions.length) : [];
+    let i = choices.length;
+    let shownAt = 0;
+
+    const render = () => {
+      if (i >= questions.length) return submit(choices, times);
+      const q = questions[i];
+      $("bar").style.width = `${(i / questions.length) * 100}%`;
+      $("qnum").textContent = `第${i + 1}問 / ${questions.length}問`;
+      $("qtext").textContent = q.question;
+      const box = $("choices");
+      box.replaceChildren();
+      shownAt = Date.now();
+      q.choices.forEach((c, idx) => {
+        const b = document.createElement("button");
+        b.className = "choice";
+        const l = document.createElement("b");
+        l.textContent = "ABCD"[idx];
+        b.append(l, document.createTextNode(c));
+        b.onclick = () => {
+          // 連打で次の問題まで誤って答えないよう、表示直後のタップは無視する
+          if (Date.now() - shownAt < 400) return;
+          choices.push(idx);
+          times.push(Date.now() - shownAt);
+          saveLocal({ choices, times });
+          i++;
+          render();
+        };
+        box.append(b);
+      });
+      show("quiz");
+      window.scrollTo(0, 0);
+    };
+    render();
+  }
+
+  async function submit(choices, times) {
+    show("submitting");
+    $("submitMsg").textContent = "送信中...";
+    $("retryBtn").classList.add("hidden");
+    try {
+      await setDoc(doc(db, "responses", uid), { name, choices, times, submittedAt: serverTimestamp() });
+      saveLocal({ choices: [], times: [] });
+      showDone();
+    } catch (e) {
+      console.error(e);
+      // すでに保存済み(上書き禁止)なら完了扱い
+      try {
+        if ((await getDoc(doc(db, "responses", uid))).exists()) { saveLocal({ choices: [], times: [] }); showDone(); return; }
+      } catch {}
+      $("submitMsg").textContent = e.code === "permission-denied"
+        ? "送信できませんでした（受付が締め切られた可能性があります）。この画面のまま幹事に声をかけてください。"
+        : "送信に失敗しました。電波の良い場所で「もう一度送信」を押してください。";
+      $("retryBtn").classList.remove("hidden");
+      $("retryBtn").onclick = () => submit(choices, times);
+    }
   }
 }
 </script>
